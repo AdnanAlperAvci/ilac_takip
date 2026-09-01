@@ -1,16 +1,62 @@
-# ilac
+# İlaç Takip
 
-A new Flutter project.
+İlaç Takip, günlük ilaç rutinlerini takip etmek için hazırlanmış Flutter tabanlı bir mobil uygulamadır. Uygulama Android tarafında belirlenen saatten sonra telefon kilidi ilk açıldığında, o gün alınmamış ilaç varsa bildirim gönderecek şekilde tasarlanmıştır.
 
-## Getting Started
+## Özellikler
 
-This project is a starting point for a Flutter application.
+- İlaç rutini ekleme, düzenleme ve silme
+- Günde bir, iki günde bir veya haftanın belirli günleri için rutin tanımlama
+- Doz bilgisini iki ondalıklı sayısal formatta kaydetme
+- Bugün alınacak ilaçları listeleme
+- İlaçları alındı olarak işaretleme
+- Belirlenen saatten sonra ilk kilit açmada Android bildirimi gönderme
+- İlaç kutusundaki QR kodu okuyarak ilaç adını otomatik doldurma
+- Türkçe tarih seçici ve Türkçe arayüz metinleri
 
-A few resources to get you started if this is your first Flutter project:
+## Kullanılan Teknolojiler
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+- Flutter
+- Dart
+- Android Kotlin
+- `mobile_scanner` ile QR okuma
+- Android `SharedPreferences` ile yerel veri saklama
+- Android `BroadcastReceiver` ile kilit açma olayını yakalama
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Kurulum
+
+Bağımlılıkları indirmek için:
+
+```bash
+flutter pub get
+```
+
+Android cihazda çalıştırmak için:
+
+```bash
+flutter run
+```
+
+## Android İzinleri
+
+Uygulama Android tarafında şu izinleri kullanır:
+
+- Kamera izni: İlaç kutusundaki QR kodu okumak için.
+- Bildirim izni: Android 13 ve üzeri cihazlarda ilaç hatırlatma bildirimi göstermek için.
+
+## Notlar
+
+Kilit açma bildirimi Android'in `USER_PRESENT` olayıyla çalışır. Uygulama, belirlenen saatten sonra gün içinde ilk kez telefon kilidi açıldığında o gün alınmamış ilaçları kontrol eder ve uygunsa bildirim gönderir.
+
+QR içerikleri düz metin, JSON, URL sorgu parametresi veya etiketli metin formatında olabilir. Örneğin:
+
+```text
+{"ilacAdi":"Parol"}
+```
+
+```text
+https://ornek.com/ilac?ilac_adi=Parol
+```
+
+```text
+İlaç adı: Parol
+```
