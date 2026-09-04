@@ -74,3 +74,5 @@ Debug sürümü gerçek uygulamanın üzerine yazmaması için ayrı paket ekiyl
 - Arka plan servis izni: Kilit açma bildirimi açıkken kilit açma takibini sürdürebilmek için kullanılır.
 
 İlaç adı, doz, kutu adedi, rutin bilgisi ve alındı kayıtları cihazdaki yerel depolamada tutulur. Bu bilgiler uygulama tarafından bir sunucuya gönderilmez.
+
+Gizlilik politikası: [İlaç Takip Gizlilik Politikası](https://adnanalperavci.github.io/ilac_takip/privacy-policy.html)
