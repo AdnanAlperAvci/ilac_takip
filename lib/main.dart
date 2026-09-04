@@ -249,11 +249,13 @@ class MedicineState {
     required this.routines,
     required this.takenDates,
     required this.notifyAfter,
+    required this.unlockNotificationsEnabled,
   });
 
   final List<MedicineRoutine> routines;
   final Map<String, Set<String>> takenDates;
   final TimeOfDay notifyAfter;
+  final bool unlockNotificationsEnabled;
 
   List<MedicineRoutine> dueFor(DateTime date) {
     return routines.where((routine) => routine.isDueOn(date)).toList()
@@ -268,11 +270,14 @@ class MedicineState {
     List<MedicineRoutine>? routines,
     Map<String, Set<String>>? takenDates,
     TimeOfDay? notifyAfter,
+    bool? unlockNotificationsEnabled,
   }) {
     return MedicineState(
       routines: routines ?? this.routines,
       takenDates: takenDates ?? this.takenDates,
       notifyAfter: notifyAfter ?? this.notifyAfter,
+      unlockNotificationsEnabled:
+          unlockNotificationsEnabled ?? this.unlockNotificationsEnabled,
     );
   }
 
@@ -284,6 +289,7 @@ class MedicineState {
       ),
       'notifyAfterHour': notifyAfter.hour,
       'notifyAfterMinute': notifyAfter.minute,
+      'unlockNotificationsEnabled': unlockNotificationsEnabled,
     };
   }
 
@@ -305,6 +311,8 @@ class MedicineState {
         hour: json['notifyAfterHour'] as int? ?? 8,
         minute: json['notifyAfterMinute'] as int? ?? 0,
       ),
+      unlockNotificationsEnabled:
+          json['unlockNotificationsEnabled'] as bool? ?? true,
     );
   }
 }
@@ -330,6 +338,10 @@ class MedicineStorage {
   Future<bool> startUnlockMonitor() async {
     return await _storageChannel.invokeMethod<bool>('startUnlockMonitor') ??
         false;
+  }
+
+  Future<void> stopUnlockMonitor() async {
+    await _storageChannel.invokeMethod<void>('stopUnlockMonitor');
   }
 
   Future<bool> requestNotificationPermission() async {
@@ -494,12 +506,21 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
     });
 
     await _storage.save(state);
-    await _storage.startUnlockMonitor();
+    await _syncUnlockMonitor(state);
   }
 
   Future<void> _prepareNotificationsOnStartup() async {
     await _storage.requestNotificationPermission();
-    await _storage.startUnlockMonitor();
+    await _syncUnlockMonitor(_state);
+  }
+
+  Future<void> _syncUnlockMonitor(MedicineState state) async {
+    if (state.unlockNotificationsEnabled) {
+      await _storage.startUnlockMonitor();
+      return;
+    }
+
+    await _storage.stopUnlockMonitor();
   }
 
   Future<void> _pickNotifyTime() async {
@@ -512,6 +533,18 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
     }
 
     await _saveState(_state.copyWith(notifyAfter: picked));
+  }
+
+  Future<void> _toggleUnlockNotifications(bool isEnabled) async {
+    await _saveState(_state.copyWith(unlockNotificationsEnabled: isEnabled));
+  }
+
+  void _openPrivacyNotice() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => const PrivacyNoticePage(),
+      ),
+    );
   }
 
   Future<void> _openRoutineForm([MedicineRoutine? routine]) async {
@@ -594,6 +627,13 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('İlaç Takibi'),
+        actions: [
+          IconButton(
+            onPressed: _openPrivacyNotice,
+            tooltip: 'Gizlilik ve beyan',
+            icon: const Icon(Icons.info_outline),
+          ),
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -604,7 +644,10 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
                   completedCount: completedCount,
                   totalCount: dueRoutines.length,
                   notifyAfter: _state.notifyAfter,
+                  unlockNotificationsEnabled:
+                      _state.unlockNotificationsEnabled,
                   onChangeTime: _pickNotifyTime,
+                  onToggleUnlockNotifications: _toggleUnlockNotifications,
                 ),
                 const SizedBox(height: 16),
                 _SectionTitle(
@@ -676,13 +719,17 @@ class _SummaryPanel extends StatelessWidget {
     required this.completedCount,
     required this.totalCount,
     required this.notifyAfter,
+    required this.unlockNotificationsEnabled,
     required this.onChangeTime,
+    required this.onToggleUnlockNotifications,
   });
 
   final int completedCount;
   final int totalCount;
   final TimeOfDay notifyAfter;
+  final bool unlockNotificationsEnabled;
   final VoidCallback onChangeTime;
+  final ValueChanged<bool> onToggleUnlockNotifications;
 
   @override
   Widget build(BuildContext context) {
@@ -711,11 +758,21 @@ class _SummaryPanel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 14),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Kilit açma bildirimleri'),
+              subtitle: const Text(
+                'Kapalıyken arka plan kilit açma takibi çalışmaz.',
+              ),
+              value: unlockNotificationsEnabled,
+              onChanged: onToggleUnlockNotifications,
+            ),
+            const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: onChangeTime,
+              onPressed: unlockNotificationsEnabled ? onChangeTime : null,
               icon: const Icon(Icons.lock_open_outlined),
               label: Text(
-                '${_formatTime(notifyAfter)} sonrası ilk kilit açmada bildir',
+                '${_formatTime(notifyAfter)} sonrası kilit açmada bildir',
               ),
             ),
           ],
@@ -1131,6 +1188,92 @@ class _CapsuleMarker extends StatelessWidget {
       height: 9,
       fit: BoxFit.contain,
       filterQuality: FilterQuality.high,
+    );
+  }
+}
+
+class PrivacyNoticePage extends StatelessWidget {
+  const PrivacyNoticePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Gizlilik ve Beyan'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: const [
+          _NoticeSection(
+            icon: Icons.health_and_safety_outlined,
+            title: 'Tıbbi tavsiye değildir',
+            message:
+                'İlaç Takip ilaç önermez, doz belirlemez, reçete yerine geçmez ve tedavi kararı vermez. Uygulama yalnızca kullanıcının kendi girdiği ilaç rutinlerini takip etmesine yardımcı olur.',
+          ),
+          SizedBox(height: 12),
+          _NoticeSection(
+            icon: Icons.storage_outlined,
+            title: 'Veriler cihazda saklanır',
+            message:
+                'İlaç adı, doz, kutu adedi, rutin bilgisi ve alındı kayıtları cihazdaki yerel depolamada tutulur. Bu bilgiler uygulama tarafından bir sunucuya gönderilmez.',
+          ),
+          SizedBox(height: 12),
+          _NoticeSection(
+            icon: Icons.qr_code_scanner_outlined,
+            title: 'Kamera kullanımı',
+            message:
+                'Kamera yalnızca ilaç kutusundaki QR veya DataMatrix kodunu okumak için kullanılır. Barkod eşleştirme APK içindeki yerel ilaç listesiyle yapılır.',
+          ),
+          SizedBox(height: 12),
+          _NoticeSection(
+            icon: Icons.notifications_active_outlined,
+            title: 'Bildirimler',
+            message:
+                'Bildirim izni ilaç hatırlatmalarını göstermek için istenir. Kilit açma bildirimleri kapatıldığında arka plan kilit açma takibi durdurulur.',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoticeSection extends StatelessWidget {
+  const _NoticeSection({
+    required this.icon,
+    required this.title,
+    required this.message,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 28),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(message),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1874,6 +2017,7 @@ MedicineState _initialState() {
     routines: [],
     takenDates: {},
     notifyAfter: TimeOfDay(hour: 8, minute: 0),
+    unlockNotificationsEnabled: true,
   );
 }
 

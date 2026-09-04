@@ -1,4 +1,4 @@
-package com.example.ilac
+package com.adnanalperavci.ilactakip
 
 import android.app.KeyguardManager
 import android.app.Notification

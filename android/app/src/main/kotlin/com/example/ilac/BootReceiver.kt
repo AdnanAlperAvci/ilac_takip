@@ -1,4 +1,4 @@
-package com.example.ilac
+package com.adnanalperavci.ilactakip
 
 import android.content.BroadcastReceiver
 import android.content.Context

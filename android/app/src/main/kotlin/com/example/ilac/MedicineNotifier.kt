@@ -1,4 +1,4 @@
-package com.example.ilac
+package com.adnanalperavci.ilactakip
 
 import android.Manifest
 import android.app.NotificationChannel
@@ -35,6 +35,11 @@ object MedicineNotifier {
     }
 
     fun startUnlockMonitor(context: Context): Boolean {
+        if (!isUnlockMonitorEnabled(context)) {
+            stopUnlockMonitor(context)
+            return false
+        }
+
         val intent = Intent(context, UnlockMonitorService::class.java)
         return runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -46,8 +51,16 @@ object MedicineNotifier {
         }.getOrDefault(false)
     }
 
+    fun stopUnlockMonitor(context: Context) {
+        context.stopService(Intent(context, UnlockMonitorService::class.java))
+    }
+
     fun notifyOnUnlockAfterLimit(context: Context) {
         val state = JSONObject(loadState(context).ifBlank { "{}" })
+        if (!state.optBoolean("unlockNotificationsEnabled", true)) {
+            return
+        }
+
         val now = Calendar.getInstance()
         val todayKey = dateFormat.format(now.time)
 
@@ -256,6 +269,11 @@ object MedicineNotifier {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun isUnlockMonitorEnabled(context: Context): Boolean {
+        val state = JSONObject(loadState(context).ifBlank { "{}" })
+        return state.optBoolean("unlockNotificationsEnabled", true)
     }
 
     private fun parseDecimal(value: String): Double? {

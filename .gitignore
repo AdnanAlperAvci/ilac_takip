@@ -34,6 +34,11 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Android release signing
+/android/key.properties
+/android/app/*.jks
+/android/app/*.keystore
+
 # Symbolication related
 app.*.symbols
 

@@ -18,8 +18,10 @@
 - Takvim günlerinde o gün kaç rutin varsa o kadar kapsül ikonu gösterme.
 - Belirlenen saatten sonra, ilaç alındı işaretlenene kadar her telefon kilidi açılışında bildirim gönderme.
 - Uygulama açıldığında Android bildirim iznini otomatik isteme.
+- Kilit açma bildirimlerini kullanıcı tarafından açıp kapatabilme.
 - İlaç kutusundaki QR veya DataMatrix kodunu okuyarak barkoddan ilaç adını ve kutu adedini otomatik doldurma.
 - Barkod aramasını cihaz içinde, APK'ya eklenen yerel TİTCK ilaç listesiyle yapma.
+- Uygulama içinde gizlilik ve tıbbi beyan ekranı gösterme.
 - Türkçe arayüz, Türkçe takvim günleri ve Türkçe açıklama metinleri kullanma.
 
 ## Kullanılan Teknolojiler
@@ -48,12 +50,46 @@ Android cihazda çalıştırmak için:
 flutter run
 ```
 
+Play Store için release paketi hazırlarken uygulama imzalama bilgileri `android/key.properties` dosyasından okunur. Bu dosya ve keystore dosyaları güvenlik için Git'e eklenmez.
+
+Örnek `android/key.properties` içeriği:
+
+```properties
+storePassword=...
+keyPassword=...
+keyAlias=upload
+storeFile=app/upload-keystore.jks
+```
+
+Release App Bundle üretmek için:
+
+```bash
+flutter build appbundle --release
+```
+
 ## Android İzinleri
 
 Uygulama Android tarafında şu izinleri kullanır:
 
 - Kamera izni: İlaç kutusundaki QR veya DataMatrix kodunu okumak için.
 - Bildirim izni: Android 13 ve üzeri cihazlarda ilaç hatırlatma bildirimi göstermek için. Uygulama açıldığında otomatik istenir.
+- Foreground service izni: Kilit açma bildirimi açıkken arka plan kilit açma takibini çalıştırmak için.
+- Boot completed izni: Telefon yeniden başladığında kullanıcı kapatmadıysa kilit açma takibini tekrar başlatmak için.
+
+## Gizlilik ve Tıbbi Beyan
+
+İlaç Takip tıbbi tavsiye vermez, ilaç önermez, doz belirlemez, reçete yerine geçmez ve tedavi kararı vermez. Uygulama yalnızca kullanıcının kendi girdiği ilaç rutinlerini takip etmesine ve hatırlamasına yardımcı olur.
+
+İlaç adı, doz, kutu adedi, rutin bilgisi ve alındı kayıtları cihazdaki yerel depolamada tutulur. Bu bilgiler uygulama tarafından bir sunucuya gönderilmez. Kamera yalnızca QR veya DataMatrix kodunu okumak için kullanılır. Barkod eşleştirme APK içindeki yerel TİTCK ilaç listesiyle yapılır.
+
+## Play Store Yayın Hazırlığı
+
+- Paket adı `com.adnanalperavci.ilactakip` olarak örnek paket adından ayrılmıştır.
+- Debug sürümü gerçek uygulamanın üzerine yazmasın diye `.test` paket ekiyle kurulur.
+- Release imzası için `android/key.properties` desteklenir; gerçek keystore bilgileri repoya eklenmez.
+- Play Console'da Health apps declaration, Data safety ve Foreground service declaration alanları doldurulmalıdır.
+- Google Play'in güncel hedef API şartı release almadan önce Android SDK ve Flutter sürümüyle doğrulanmalıdır.
+- Herkese açık bir gizlilik politikası URL'si Play Console'a eklenmelidir.
 
 ## Barkoddan İlaç Adı Alma
 

@@ -1,4 +1,4 @@
-package com.example.ilac
+package com.adnanalperavci.ilactakip
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -25,6 +25,10 @@ class MainActivity : FlutterActivity() {
                     "requestNotificationPermission" -> requestNotificationPermission(result)
                     "startUnlockMonitor" -> {
                         result.success(MedicineNotifier.startUnlockMonitor(this))
+                    }
+                    "stopUnlockMonitor" -> {
+                        MedicineNotifier.stopUnlockMonitor(this)
+                        result.success(null)
                     }
                     else -> result.notImplemented()
                 }
