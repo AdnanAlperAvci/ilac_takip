@@ -17,11 +17,11 @@ import java.util.concurrent.TimeUnit
 
 object MedicineNotifier {
     const val CHANNEL_NAME = "ilac/storage"
+    const val REMINDER_CHANNEL_ID = "medicine_unlock_reminders"
+    const val MONITOR_CHANNEL_ID = "medicine_unlock_monitor"
 
     private const val PREFS_NAME = "medicine_store"
     private const val STATE_KEY = "medicine_state"
-    private const val LAST_UNLOCK_DATE_KEY = "last_unlock_notification_date"
-    private const val NOTIFICATION_CHANNEL_ID = "medicine_unlock_reminders"
     private const val NOTIFICATION_ID = 1107
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
@@ -34,15 +34,22 @@ object MedicineNotifier {
         prefs(context).edit().putString(STATE_KEY, stateJson).apply()
     }
 
-    fun notifyOnFirstUnlockAfterLimit(context: Context) {
+    fun startUnlockMonitor(context: Context): Boolean {
+        val intent = Intent(context, UnlockMonitorService::class.java)
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    fun notifyOnUnlockAfterLimit(context: Context) {
         val state = JSONObject(loadState(context).ifBlank { "{}" })
         val now = Calendar.getInstance()
         val todayKey = dateFormat.format(now.time)
-        val sharedPrefs = prefs(context)
-
-        if (sharedPrefs.getString(LAST_UNLOCK_DATE_KEY, "") == todayKey) {
-            return
-        }
 
         val limitHour = state.optInt("notifyAfterHour", 8)
         val limitMinute = state.optInt("notifyAfterMinute", 0)
@@ -59,7 +66,6 @@ object MedicineNotifier {
             return
         }
 
-        sharedPrefs.edit().putString(LAST_UNLOCK_DATE_KEY, todayKey).apply()
         showNotification(context, dueMedicines)
     }
 
@@ -106,7 +112,8 @@ object MedicineNotifier {
             return false
         }
 
-        return when (routine.optString("routineType", "daily")) {
+        val routineType = routine.optString("routineType", "daily")
+        val isPatternDue = when (routineType) {
             "everyOtherDay" -> {
                 val daysBetween = TimeUnit.MILLISECONDS.toDays(
                     current.timeInMillis - start.timeInMillis,
@@ -119,6 +126,68 @@ object MedicineNotifier {
             )
             else -> true
         }
+
+        if (!isPatternDue) {
+            return false
+        }
+
+        val maxDoseCount = maxDoseCount(routine) ?: return true
+        val doseNumber = doseNumberOn(routine, routineType, start, current) ?: return false
+        return doseNumber <= maxDoseCount
+    }
+
+    private fun maxDoseCount(routine: JSONObject): Int? {
+        val boxQuantity = parseDecimal(routine.optString("boxQuantity"))
+        val dose = parseDecimal(routine.optString("dose"))
+        if (boxQuantity == null || boxQuantity <= 0.0 || dose == null || dose <= 0.0) {
+            return null
+        }
+
+        return (boxQuantity / dose).toInt()
+    }
+
+    private fun doseNumberOn(
+        routine: JSONObject,
+        routineType: String,
+        start: Calendar,
+        current: Calendar,
+    ): Int? {
+        val daysBetween = TimeUnit.MILLISECONDS.toDays(
+            current.timeInMillis - start.timeInMillis,
+        ).toInt()
+
+        return when (routineType) {
+            "everyOtherDay" -> {
+                if (daysBetween % 2 != 0) {
+                    null
+                } else {
+                    daysBetween / 2 + 1
+                }
+            }
+            "weekly" -> weeklyDoseNumberOn(
+                routine.optJSONArray("weekdays") ?: JSONArray(),
+                start,
+                current,
+            )
+            else -> daysBetween + 1
+        }
+    }
+
+    private fun weeklyDoseNumberOn(
+        weekdays: JSONArray,
+        start: Calendar,
+        current: Calendar,
+    ): Int {
+        val cursor = start.clone() as Calendar
+        var doseCount = 0
+        while (!cursor.after(current)) {
+            if (containsInt(weekdays, dartWeekday(cursor))) {
+                doseCount += 1
+            }
+            cursor.add(Calendar.DAY_OF_YEAR, 1)
+        }
+
+        return doseCount
     }
 
     private fun showNotification(context: Context, medicineNames: List<String>) {
@@ -140,14 +209,14 @@ object MedicineNotifier {
         val text = medicineNames.take(3).joinToString(", ")
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            android.app.Notification.Builder(context, NOTIFICATION_CHANNEL_ID)
+            android.app.Notification.Builder(context, REMINDER_CHANNEL_ID)
         } else {
             @Suppress("DEPRECATION")
             android.app.Notification.Builder(context)
         }
 
         val notification = builder
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(android.app.Notification.BigTextStyle().bigText(text))
@@ -166,7 +235,7 @@ object MedicineNotifier {
         }
 
         val channel = NotificationChannel(
-            NOTIFICATION_CHANNEL_ID,
+            REMINDER_CHANNEL_ID,
             "İlaç kilit açma hatırlatmaları",
             NotificationManager.IMPORTANCE_DEFAULT,
         )
@@ -187,6 +256,10 @@ object MedicineNotifier {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun parseDecimal(value: String): Double? {
+        return value.trim().replace(',', '.').toDoubleOrNull()
     }
 
     private fun containsString(values: JSONArray, needle: String): Boolean {

@@ -4,10 +4,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 
-class UnlockReceiver : BroadcastReceiver() {
+class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_USER_PRESENT) {
-            MedicineNotifier.notifyOnUnlockAfterLimit(context)
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+            MedicineNotifier.startUnlockMonitor(context)
         }
     }
 }

@@ -1,26 +1,38 @@
 # İlaç Takip
 
-İlaç Takip, günlük ilaç rutinlerini takip etmek için hazırlanmış Flutter tabanlı bir mobil uygulamadır. Uygulama Android tarafında belirlenen saatten sonra telefon kilidi ilk açıldığında, o gün alınmamış ilaç varsa bildirim gönderecek şekilde tasarlanmıştır.
+İlaç Takip, günlük ilaç rutinlerini takip etmek için hazırlanmış Flutter tabanlı bir mobil uygulamadır. Uygulama Android tarafında belirlenen saatten sonra telefon kilidi her açıldığında, o gün alınmamış ilaç varsa bildirim gönderecek şekilde tasarlanmıştır.
 
-## Özellikler
+## Uygulamanın Fonksiyonları
 
-- İlaç rutini ekleme, düzenleme ve silme
-- Günde bir, iki günde bir veya haftanın belirli günleri için rutin tanımlama
-- Doz bilgisini iki ondalıklı sayısal formatta kaydetme
-- Bugün alınacak ilaçları listeleme
-- İlaçları alındı olarak işaretleme
-- Belirlenen saatten sonra ilk kilit açmada Android bildirimi gönderme
-- İlaç kutusundaki QR kodu okuyarak ilaç adını otomatik doldurma
-- Türkçe tarih seçici ve Türkçe arayüz metinleri
+İlaç Takip, kullanıcının düzenli kullandığı ilaçları telefonda yerel olarak takip eder. Ana ekranda günün ilaçları, tamamlanma durumu, kilit açma bildirimi saati ve rutin listesi birlikte gösterilir.
+
+- İlaç rutini ekleme, düzenleme, aktif/pasif yapma ve silme.
+- Günde bir, iki günde bir veya haftanın belirli günleri için rutin tanımlama.
+- İki günde bir kullanılan ilaçlarda rutinin bugün mü yarın mı başlayacağını seçme.
+- İlaç saatini isteğe bağlı tutma; saat girilmezse rutin yine takvim ve bildirim hesabına dahil edilir.
+- Dozu iki ondalıklı sayısal değer olarak kaydetme.
+- Kutudaki adet bilgisini girme, barkoddan otomatik doldurma ve kutu bitince rutini takvim hesabından düşürme.
+- Bugün alınması gereken ilaçları listeleme ve her ilacı alındı olarak işaretleme.
+- Haftalık takvim gösterme; takvime dokununca aylık görünüme geçme.
+- Aylık takvimde önceki ve sonraki aylar arasında oklarla gezinme.
+- Takvim günlerinde o gün kaç rutin varsa o kadar kapsül ikonu gösterme.
+- Belirlenen saatten sonra, ilaç alındı işaretlenene kadar her telefon kilidi açılışında bildirim gönderme.
+- Uygulama açıldığında Android bildirim iznini otomatik isteme.
+- İlaç kutusundaki QR veya DataMatrix kodunu okuyarak barkoddan ilaç adını ve kutu adedini otomatik doldurma.
+- Barkod aramasını cihaz içinde, APK'ya eklenen yerel TİTCK ilaç listesiyle yapma.
+- Türkçe arayüz, Türkçe takvim günleri ve Türkçe açıklama metinleri kullanma.
 
 ## Kullanılan Teknolojiler
 
-- Flutter
-- Dart
-- Android Kotlin
-- `mobile_scanner` ile QR okuma
-- Android `SharedPreferences` ile yerel veri saklama
-- Android `BroadcastReceiver` ile kilit açma olayını yakalama
+- Flutter: Ana mobil arayüz, form ekranları, takvim görünümü ve kullanıcı etkileşimleri için kullanılır.
+- Dart: İlaç rutini modeli, tarih/rutin hesapları, doz doğrulama, barkod ayrıştırma ve yerel ilaç listesi okuma işlemlerini yürütür.
+- Android Kotlin: Kilit açma takibi, native bildirimler, foreground service ve Android izin akışını yönetir.
+- `mobile_scanner`: QR ve DataMatrix kodlarını telefon kamerasıyla okumak için kullanılır.
+- Android `SharedPreferences`: İlaç rutinlerini, alınan günleri ve bildirim saatini cihazda yerel olarak saklar.
+- Android `BroadcastReceiver`: Telefon kilidi açıldığında Android olaylarını yakalamak için kullanılır.
+- Android foreground service: Uygulama kapalıyken de kilit açma takibinin çalışmasına yardımcı olur.
+- Yerel JSON asset: TİTCK kaynaklı barkod, ilaç adı ve kutu adedi verisini APK içinde taşır.
+- Python yardımcı scripti: Resmi TİTCK Excel listesinden `assets/medicine_barcodes.json` dosyasını üretmek için kullanılır.
 
 ## Kurulum
 
@@ -40,14 +52,34 @@ flutter run
 
 Uygulama Android tarafında şu izinleri kullanır:
 
-- Kamera izni: İlaç kutusundaki QR kodu okumak için.
-- Bildirim izni: Android 13 ve üzeri cihazlarda ilaç hatırlatma bildirimi göstermek için.
+- Kamera izni: İlaç kutusundaki QR veya DataMatrix kodunu okumak için.
+- Bildirim izni: Android 13 ve üzeri cihazlarda ilaç hatırlatma bildirimi göstermek için. Uygulama açıldığında otomatik istenir.
+
+## Barkoddan İlaç Adı Alma
+
+Uygulama, ilaç kutusundan okunan barkodu APK içine eklenen `assets/medicine_barcodes.json` dosyasında arar ve eşleşen ilaç adını forma yazar. Kutu adedi bilgisi TİTCK listesinde varsa doğrudan, yoksa ilaç adındaki paket bilgisinden otomatik doldurulur. Barkod yerel listede bulunamazsa ilaç adı alanına `Barkod ...` gibi geçici bir metin yazılmaz; kullanıcıya hata mesajı gösterilir.
+
+Tam barkod listesini güncellemek için resmi TİTCK SKRS E-Reçete İlaç ve Diğer Farmasötik Ürünler Listesi kaynak alınır. Script, TİTCK sayfasındaki en güncel Excel dosyasını indirip yerel asset'i yeniden oluşturabilir:
+
+```bash
+python scripts/build_titck_medicine_barcodes.py
+```
+
+Elinizde indirilmiş resmi TİTCK Excel dosyası varsa onu doğrudan da kullanabilirsiniz:
+
+```bash
+python scripts/build_titck_medicine_barcodes.py --source path/to/titck.xlsx
+```
+
+Bu işlem yalnızca uygulamayı hazırlarken gerekir. Kullanıcı telefonunda IP girmez, ayrı sunucu çalıştırmaz ve barkod arama cihaz içinde yapılır.
 
 ## Notlar
 
-Kilit açma bildirimi Android'in `USER_PRESENT` olayıyla çalışır. Uygulama, belirlenen saatten sonra gün içinde ilk kez telefon kilidi açıldığında o gün alınmamış ilaçları kontrol eder ve uygunsa bildirim gönderir.
+Kilit açma bildirimi Android'in `USER_PRESENT` olayıyla çalışır. Uygulama, belirlenen saatten sonra telefon kilidi açıldığında o gün alınmamış ilaçları kontrol eder ve ilaç alındı işaretlenene kadar her kilit açmada bildirim gönderir.
 
-QR içerikleri düz metin, JSON, URL sorgu parametresi veya etiketli metin formatında olabilir. Örneğin:
+Android, foreground service kullanan uygulamaların servis çalışırken sistem bildirimi göstermesini zorunlu tutar. Bu nedenle kilit açma takibi açıkken sessiz ve düşük öncelikli bir "İlaç Takip" servis bildirimi oluşabilir; asıl ilaç hatırlatması yalnızca alınmamış ilaç varsa gösterilir.
+
+QR içerikleri düz metin, JSON, URL sorgu parametresi veya etiketli metin formatında olabilir. DataMatrix içinde GS1 `(01)` barkodu varsa ilaç adı yerel TİTCK listesi üzerinden bulunur. Örneğin:
 
 ```text
 {"ilacAdi":"Parol"}

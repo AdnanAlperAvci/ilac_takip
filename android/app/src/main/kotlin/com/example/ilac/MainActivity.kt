@@ -19,12 +19,21 @@ class MainActivity : FlutterActivity() {
                     "loadState" -> result.success(MedicineNotifier.loadState(this))
                     "saveState" -> {
                         MedicineNotifier.saveState(this, call.arguments as? String ?: "")
+                        MedicineNotifier.startUnlockMonitor(this)
                         result.success(null)
                     }
                     "requestNotificationPermission" -> requestNotificationPermission(result)
+                    "startUnlockMonitor" -> {
+                        result.success(MedicineNotifier.startUnlockMonitor(this))
+                    }
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        MedicineNotifier.startUnlockMonitor(this)
     }
 
     private fun requestNotificationPermission(result: MethodChannel.Result) {
@@ -56,6 +65,9 @@ class MainActivity : FlutterActivity() {
 
         if (requestCode == NOTIFICATION_PERMISSION_REQUEST) {
             val isGranted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+            if (isGranted) {
+                MedicineNotifier.startUnlockMonitor(this)
+            }
             notificationPermissionResult?.success(isGranted)
             notificationPermissionResult = null
         }

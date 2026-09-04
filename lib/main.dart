@@ -10,6 +10,10 @@ void main() {
 }
 
 const _storageChannel = MethodChannel('ilac/storage');
+const _unsetValue = Object();
+const _medicineBarcodeAssetPath = 'assets/medicine_barcodes.json';
+const _capsuleMarkerAssetPath = 'assets/capsule_marker.png';
+const _daysPerWeek = 7;
 
 class MedicineApp extends StatelessWidget {
   const MedicineApp({super.key});
@@ -73,6 +77,7 @@ class MedicineRoutine {
     required this.id,
     required this.name,
     required this.dose,
+    required this.boxQuantity,
     required this.time,
     required this.routineType,
     required this.startDate,
@@ -84,7 +89,8 @@ class MedicineRoutine {
   final String id;
   final String name;
   final String dose;
-  final TimeOfDay time;
+  final String boxQuantity;
+  final TimeOfDay? time;
   final RoutineType routineType;
   final DateTime startDate;
   final Set<int> weekdays;
@@ -102,20 +108,79 @@ class MedicineRoutine {
       return false;
     }
 
+    final bool isPatternDue;
     switch (routineType) {
       case RoutineType.daily:
-        return true;
+        isPatternDue = true;
+        break;
       case RoutineType.everyOtherDay:
-        return currentDate.difference(firstDate).inDays.isEven;
+        isPatternDue = currentDate.difference(firstDate).inDays.isEven;
+        break;
       case RoutineType.weekly:
-        return weekdays.contains(currentDate.weekday);
+        isPatternDue = weekdays.contains(currentDate.weekday);
+        break;
     }
+
+    if (!isPatternDue) {
+      return false;
+    }
+
+    final maxDoseCount = _maxDoseCount();
+    if (maxDoseCount == null) {
+      return true;
+    }
+
+    final doseNumber = _doseNumberOn(currentDate, firstDate);
+    return doseNumber != null && doseNumber <= maxDoseCount;
+  }
+
+  int? _maxDoseCount() {
+    final boxQuantityValue = _parseDose(boxQuantity);
+    final doseValue = _parseDose(dose);
+    if (boxQuantityValue == null ||
+        boxQuantityValue <= 0 ||
+        doseValue == null ||
+        doseValue <= 0) {
+      return null;
+    }
+
+    return boxQuantityValue ~/ doseValue;
+  }
+
+  int? _doseNumberOn(DateTime currentDate, DateTime firstDate) {
+    switch (routineType) {
+      case RoutineType.daily:
+        return currentDate.difference(firstDate).inDays + 1;
+      case RoutineType.everyOtherDay:
+        final daysBetween = currentDate.difference(firstDate).inDays;
+        if (!daysBetween.isEven) {
+          return null;
+        }
+
+        return daysBetween ~/ 2 + 1;
+      case RoutineType.weekly:
+        return _weeklyDoseNumberOn(currentDate, firstDate);
+    }
+  }
+
+  int _weeklyDoseNumberOn(DateTime currentDate, DateTime firstDate) {
+    var doseCount = 0;
+    var cursor = firstDate;
+    while (!cursor.isAfter(currentDate)) {
+      if (weekdays.contains(cursor.weekday)) {
+        doseCount += 1;
+      }
+      cursor = cursor.add(const Duration(days: 1));
+    }
+
+    return doseCount;
   }
 
   MedicineRoutine copyWith({
     String? name,
     String? dose,
-    TimeOfDay? time,
+    String? boxQuantity,
+    Object? time = _unsetValue,
     RoutineType? routineType,
     DateTime? startDate,
     Set<int>? weekdays,
@@ -126,7 +191,8 @@ class MedicineRoutine {
       id: id,
       name: name ?? this.name,
       dose: dose ?? this.dose,
-      time: time ?? this.time,
+      boxQuantity: boxQuantity ?? this.boxQuantity,
+      time: time == _unsetValue ? this.time : time as TimeOfDay?,
       routineType: routineType ?? this.routineType,
       startDate: startDate ?? this.startDate,
       weekdays: weekdays ?? this.weekdays,
@@ -140,8 +206,9 @@ class MedicineRoutine {
       'id': id,
       'name': name,
       'dose': dose,
-      'timeHour': time.hour,
-      'timeMinute': time.minute,
+      'boxQuantity': boxQuantity,
+      'timeHour': time?.hour,
+      'timeMinute': time?.minute,
       'routineType': routineType.name,
       'startDate': _dateKey(startDate),
       'weekdays': weekdays.toList()..sort(),
@@ -155,10 +222,13 @@ class MedicineRoutine {
       id: json['id'] as String,
       name: json['name'] as String? ?? '',
       dose: json['dose'] as String? ?? '',
-      time: TimeOfDay(
-        hour: json['timeHour'] as int? ?? 9,
-        minute: json['timeMinute'] as int? ?? 0,
-      ),
+      boxQuantity: json['boxQuantity'] as String? ?? '',
+      time: json['timeHour'] == null || json['timeMinute'] == null
+          ? null
+          : TimeOfDay(
+              hour: json['timeHour'] as int,
+              minute: json['timeMinute'] as int,
+            ),
       routineType: RoutineType.values.firstWhere(
         (type) => type.name == json['routineType'],
         orElse: () => RoutineType.daily,
@@ -257,11 +327,129 @@ class MedicineStorage {
     );
   }
 
+  Future<bool> startUnlockMonitor() async {
+    return await _storageChannel.invokeMethod<bool>('startUnlockMonitor') ??
+        false;
+  }
+
   Future<bool> requestNotificationPermission() async {
     return await _storageChannel.invokeMethod<bool>(
           'requestNotificationPermission',
         ) ??
         false;
+  }
+}
+
+class MedicineLookupResult {
+  const MedicineLookupResult({
+    this.medicineName,
+    this.boxQuantity,
+    this.message,
+  });
+
+  final String? medicineName;
+  final String? boxQuantity;
+  final String? message;
+}
+
+class MedicineCatalogItem {
+  const MedicineCatalogItem({
+    required this.name,
+    this.boxQuantity,
+  });
+
+  final String name;
+  final String? boxQuantity;
+}
+
+class MedicineLookupService {
+  Map<String, MedicineCatalogItem>? _barcodeMedicines;
+
+  Future<MedicineLookupResult> lookupFromScannedCode(String scannedCode) async {
+    final fallbackName = _extractMedicineNameFromQr(scannedCode);
+    final barcode = _extractBarcodeFromScannedCode(scannedCode);
+    if (barcode == null) {
+      return MedicineLookupResult(medicineName: fallbackName);
+    }
+
+    final MedicineCatalogItem? medicine;
+    try {
+      medicine = await _lookupByBarcode(barcode);
+    } on FlutterError {
+      return const MedicineLookupResult(
+        message: 'Yerel ilaç listesi uygulama içinde bulunamadı.',
+      );
+    } on FormatException {
+      return const MedicineLookupResult(
+        message: 'Yerel ilaç listesi okunamadı.',
+      );
+    }
+
+    if (medicine == null || medicine.name.trim().isEmpty) {
+      return MedicineLookupResult(
+        message: 'Barkod yerel ilaç listesinde bulunamadı: $barcode',
+      );
+    }
+
+    return MedicineLookupResult(
+      medicineName: medicine.name.trim(),
+      boxQuantity: medicine.boxQuantity,
+    );
+  }
+
+  Future<MedicineCatalogItem?> _lookupByBarcode(String barcode) async {
+    final medicines = await _loadBarcodeMedicines();
+    return medicines[barcode];
+  }
+
+  Future<Map<String, MedicineCatalogItem>> _loadBarcodeMedicines() async {
+    if (_barcodeMedicines != null) {
+      return _barcodeMedicines!;
+    }
+
+    final assetContent = await rootBundle.loadString(_medicineBarcodeAssetPath);
+    final decoded = jsonDecode(assetContent);
+    final barcodeMedicines = <String, MedicineCatalogItem>{};
+
+    if (decoded is Map<String, dynamic>) {
+      decoded.forEach((barcode, value) {
+        final normalizedBarcode = _normalizeBarcode(barcode);
+        if (value is String && value.trim().isNotEmpty) {
+          barcodeMedicines[normalizedBarcode] = MedicineCatalogItem(
+            name: value.trim(),
+            boxQuantity: _extractBoxQuantityFromText(value),
+          );
+        }
+
+        if (value is Map<String, dynamic>) {
+          final medicineName = _readMedicineName(value);
+          if (normalizedBarcode.isNotEmpty && medicineName != null) {
+            barcodeMedicines[normalizedBarcode] = MedicineCatalogItem(
+              name: medicineName,
+              boxQuantity: _readBoxQuantity(value) ??
+                  _extractBoxQuantityFromText(medicineName),
+            );
+          }
+        }
+      });
+    }
+
+    if (decoded is List) {
+      for (final item in decoded.whereType<Map<String, dynamic>>()) {
+        final barcode = _normalizeBarcode(item['Barkod']?.toString());
+        final medicineName = _readMedicineName(item);
+        if (barcode.isNotEmpty && medicineName != null) {
+          barcodeMedicines[barcode] = MedicineCatalogItem(
+            name: medicineName,
+            boxQuantity: _readBoxQuantity(item) ??
+                _extractBoxQuantityFromText(medicineName),
+          );
+        }
+      }
+    }
+
+    _barcodeMedicines = barcodeMedicines;
+    return barcodeMedicines;
   }
 }
 
@@ -274,7 +462,10 @@ class MedicineHomePage extends StatefulWidget {
 
 class _MedicineHomePageState extends State<MedicineHomePage> {
   final MedicineStorage _storage = MedicineStorage();
+  final MedicineLookupService _medicineLookupService = MedicineLookupService();
   MedicineState _state = _initialState();
+  DateTime _visibleCalendarMonth = _firstDayOfMonth(DateTime.now());
+  bool _isCalendarExpanded = false;
   bool _isLoading = true;
 
   @override
@@ -293,6 +484,8 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
       _state = loadedState;
       _isLoading = false;
     });
+
+    await _prepareNotificationsOnStartup();
   }
 
   Future<void> _saveState(MedicineState state) async {
@@ -301,23 +494,12 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
     });
 
     await _storage.save(state);
+    await _storage.startUnlockMonitor();
   }
 
-  Future<void> _requestPermission() async {
-    final isGranted = await _storage.requestNotificationPermission();
-    if (!mounted) {
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          isGranted
-              ? 'Bildirim izni açık.'
-              : 'Bildirim izni verilmedi. Android ayarlarından açabilirsiniz.',
-        ),
-      ),
-    );
+  Future<void> _prepareNotificationsOnStartup() async {
+    await _storage.requestNotificationPermission();
+    await _storage.startUnlockMonitor();
   }
 
   Future<void> _pickNotifyTime() async {
@@ -337,7 +519,10 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (context) => RoutineFormSheet(routine: routine),
+      builder: (context) => RoutineFormSheet(
+        routine: routine,
+        medicineLookupService: _medicineLookupService,
+      ),
     );
     if (savedRoutine == null) {
       return;
@@ -380,6 +565,24 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
     await _saveState(_state.copyWith(takenDates: takenDates));
   }
 
+  void _toggleCalendarView() {
+    setState(() {
+      _isCalendarExpanded = !_isCalendarExpanded;
+      if (_isCalendarExpanded) {
+        _visibleCalendarMonth = _firstDayOfMonth(DateTime.now());
+      }
+    });
+  }
+
+  void _changeVisibleCalendarMonth(int monthOffset) {
+    setState(() {
+      _visibleCalendarMonth = DateTime(
+        _visibleCalendarMonth.year,
+        _visibleCalendarMonth.month + monthOffset,
+      );
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final today = DateTime.now();
@@ -391,18 +594,6 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('İlaç Takibi'),
-        actions: [
-          IconButton(
-            onPressed: _requestPermission,
-            tooltip: 'Bildirim izni',
-            icon: const Icon(Icons.notifications_active_outlined),
-          ),
-          IconButton(
-            onPressed: _pickNotifyTime,
-            tooltip: 'Kilit açma bildirim saati',
-            icon: const Icon(Icons.lock_clock_outlined),
-          ),
-        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -439,6 +630,16 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
                     ),
                   ),
                 const SizedBox(height: 16),
+                MedicineCalendarPanel(
+                  state: _state,
+                  today: today,
+                  visibleMonth: _visibleCalendarMonth,
+                  isExpanded: _isCalendarExpanded,
+                  onToggle: _toggleCalendarView,
+                  onPreviousMonth: () => _changeVisibleCalendarMonth(-1),
+                  onNextMonth: () => _changeVisibleCalendarMonth(1),
+                ),
+                const SizedBox(height: 16),
                 const _SectionTitle(title: 'Rutinler'),
                 const SizedBox(height: 8),
                 if (_state.routines.isEmpty)
@@ -453,6 +654,7 @@ class _MedicineHomePageState extends State<MedicineHomePage> {
                       padding: const EdgeInsets.only(bottom: 8),
                       child: RoutineTile(
                         routine: routine,
+                        takenCount: _state.takenDates[routine.id]?.length ?? 0,
                         onEdit: () => _openRoutineForm(routine),
                         onDelete: () => _deleteRoutine(routine),
                       ),
@@ -543,9 +745,392 @@ class TodayRoutineTile extends StatelessWidget {
         onChanged: (value) => onChanged(value ?? false),
         secondary: const Icon(Icons.medication_liquid_outlined),
         title: Text(routine.name),
-        subtitle: Text('${_formatTime(routine.time)} - ${routine.dose}'),
+        subtitle: Text(_todayRoutineDescription(routine)),
         controlAffinity: ListTileControlAffinity.trailing,
       ),
+    );
+  }
+}
+
+class MedicineCalendarPanel extends StatelessWidget {
+  const MedicineCalendarPanel({
+    super.key,
+    required this.state,
+    required this.today,
+    required this.visibleMonth,
+    required this.isExpanded,
+    required this.onToggle,
+    required this.onPreviousMonth,
+    required this.onNextMonth,
+  });
+
+  final MedicineState state;
+  final DateTime today;
+  final DateTime visibleMonth;
+  final bool isExpanded;
+  final VoidCallback onToggle;
+  final VoidCallback onPreviousMonth;
+  final VoidCallback onNextMonth;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onToggle,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            children: [
+              if (isExpanded)
+                _CalendarMonthHeader(
+                  visibleMonth: visibleMonth,
+                  onPreviousMonth: onPreviousMonth,
+                  onNextMonth: onNextMonth,
+                )
+              else
+                const _CalendarWeekHeader(),
+              const SizedBox(height: 8),
+              if (isExpanded)
+                _MonthCalendarGrid(
+                  state: state,
+                  today: today,
+                  visibleMonth: visibleMonth,
+                )
+              else
+                _WeekCalendarRow(
+                  state: state,
+                  today: today,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CalendarWeekHeader extends StatelessWidget {
+  const _CalendarWeekHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Text(
+          'Haftalık takvim',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const Spacer(),
+        const Icon(Icons.expand_more, size: 20),
+      ],
+    );
+  }
+}
+
+class _CalendarMonthHeader extends StatelessWidget {
+  const _CalendarMonthHeader({
+    required this.visibleMonth,
+    required this.onPreviousMonth,
+    required this.onNextMonth,
+  });
+
+  final DateTime visibleMonth;
+  final VoidCallback onPreviousMonth;
+  final VoidCallback onNextMonth;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        IconButton(
+          onPressed: onPreviousMonth,
+          tooltip: 'Önceki ay',
+          icon: const Icon(Icons.chevron_left),
+        ),
+        Expanded(
+          child: Text(
+            _formatMonthYear(visibleMonth),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+        ),
+        IconButton(
+          onPressed: onNextMonth,
+          tooltip: 'Sonraki ay',
+          icon: const Icon(Icons.chevron_right),
+        ),
+      ],
+    );
+  }
+}
+
+class _WeekCalendarRow extends StatelessWidget {
+  const _WeekCalendarRow({
+    required this.state,
+    required this.today,
+  });
+
+  final MedicineState state;
+  final DateTime today;
+
+  @override
+  Widget build(BuildContext context) {
+    final weekStart = _startOfWeek(today);
+    final dates = List.generate(
+      _daysPerWeek,
+      (index) => weekStart.add(Duration(days: index)),
+    );
+
+    return Row(
+      children: dates
+          .map(
+            (date) => Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: _CalendarDayCell(
+                  date: date,
+                  routineCount: state.dueFor(date).length,
+                  isToday: _isSameDate(date, today),
+                  isOutsideMonth: false,
+                  height: 72,
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
+}
+
+class _MonthCalendarGrid extends StatelessWidget {
+  const _MonthCalendarGrid({
+    required this.state,
+    required this.today,
+    required this.visibleMonth,
+  });
+
+  final MedicineState state;
+  final DateTime today;
+  final DateTime visibleMonth;
+
+  @override
+  Widget build(BuildContext context) {
+    final gridStart = _startOfWeek(visibleMonth);
+    final dates = List.generate(
+      _daysPerWeek * 6,
+      (index) => gridStart.add(Duration(days: index)),
+    );
+
+    return Column(
+      children: [
+        Row(
+          children: _weekdayLabels
+              .map(
+                (label) => Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: _CalendarWeekdayText(
+                      label: label,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              )
+              .toList(),
+        ),
+        const SizedBox(height: 6),
+        GridView.builder(
+          itemCount: dates.length,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: _daysPerWeek,
+            mainAxisSpacing: 4,
+            crossAxisSpacing: 4,
+            mainAxisExtent: 58,
+          ),
+          itemBuilder: (context, index) {
+            final date = dates[index];
+            return _CalendarDayCell(
+              date: date,
+              routineCount: state.dueFor(date).length,
+              isToday: _isSameDate(date, today),
+              isOutsideMonth: date.month != visibleMonth.month,
+              height: 58,
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _CalendarDayCell extends StatelessWidget {
+  const _CalendarDayCell({
+    required this.date,
+    required this.routineCount,
+    required this.isToday,
+    required this.isOutsideMonth,
+    required this.height,
+  });
+
+  final DateTime date;
+  final int routineCount;
+  final bool isToday;
+  final bool isOutsideMonth;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final borderColor = isToday ? colorScheme.primary : const Color(0xFFE1EAE5);
+    final backgroundColor = isToday
+        ? colorScheme.primaryContainer.withValues(alpha: 0.55)
+        : Colors.white;
+    final textColor = isOutsideMonth
+        ? colorScheme.onSurface.withValues(alpha: 0.35)
+        : colorScheme.onSurface;
+
+    return Container(
+      height: height,
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: borderColor),
+      ),
+      child: Stack(
+        children: [
+          Positioned(
+            left: 7,
+            top: 6,
+            right: 7,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  height: 13,
+                  child: _CalendarWeekdayText(
+                    label: _weekdayLabels[date.weekday - 1],
+                    color: textColor,
+                    textAlign: TextAlign.left,
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  date.day.toString(),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: textColor,
+                        fontWeight: isToday ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          Positioned(
+            right: 4,
+            bottom: 4,
+            child: _PillIconStack(
+              count: routineCount,
+              maxHeight: height - 36,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CalendarWeekdayText extends StatelessWidget {
+  const _CalendarWeekdayText({
+    required this.label,
+    required this.color,
+    required this.textAlign,
+  });
+
+  final String label;
+  final Color color;
+  final TextAlign textAlign;
+
+  @override
+  Widget build(BuildContext context) {
+    return FittedBox(
+      alignment: textAlign == TextAlign.center
+          ? Alignment.center
+          : Alignment.centerLeft,
+      fit: BoxFit.scaleDown,
+      child: Text(
+        label,
+        maxLines: 1,
+        softWrap: false,
+        overflow: TextOverflow.visible,
+        textAlign: textAlign,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w600,
+            ),
+      ),
+    );
+  }
+}
+
+class _PillIconStack extends StatelessWidget {
+  const _PillIconStack({
+    required this.count,
+    required this.maxHeight,
+  });
+
+  final int count;
+  final double maxHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    if (count <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: 30,
+        maxHeight: maxHeight,
+      ),
+      child: SizedBox(
+        width: 30,
+        height: maxHeight,
+        child: FittedBox(
+          alignment: Alignment.bottomRight,
+          fit: BoxFit.scaleDown,
+          child: SizedBox(
+            width: 18,
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              runAlignment: WrapAlignment.end,
+              spacing: 0,
+              runSpacing: 0,
+              children: List.generate(
+                count,
+                (index) => const _CapsuleMarker(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CapsuleMarker extends StatelessWidget {
+  const _CapsuleMarker();
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.asset(
+      _capsuleMarkerAssetPath,
+      width: 9,
+      height: 9,
+      fit: BoxFit.contain,
+      filterQuality: FilterQuality.high,
     );
   }
 }
@@ -554,11 +1139,13 @@ class RoutineTile extends StatelessWidget {
   const RoutineTile({
     super.key,
     required this.routine,
+    required this.takenCount,
     required this.onEdit,
     required this.onDelete,
   });
 
   final MedicineRoutine routine;
+  final int takenCount;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
@@ -570,7 +1157,7 @@ class RoutineTile extends StatelessWidget {
           routine.isActive ? Icons.medication_outlined : Icons.pause_circle_outline,
         ),
         title: Text(routine.name),
-        subtitle: Text(_routineDescription(routine)),
+        subtitle: Text(_routineDescription(routine, takenCount: takenCount)),
         trailing: PopupMenuButton<String>(
           tooltip: 'Rutin işlemleri',
           onSelected: (value) {
@@ -600,9 +1187,11 @@ class RoutineTile extends StatelessWidget {
 class RoutineFormSheet extends StatefulWidget {
   const RoutineFormSheet({
     super.key,
+    required this.medicineLookupService,
     this.routine,
   });
 
+  final MedicineLookupService medicineLookupService;
   final MedicineRoutine? routine;
 
   @override
@@ -613,12 +1202,15 @@ class _RoutineFormSheetState extends State<RoutineFormSheet> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
   late final TextEditingController _doseController;
+  late final TextEditingController _boxQuantityController;
   late final TextEditingController _noteController;
   late RoutineType _routineType;
   late TimeOfDay _time;
-  late DateTime _startDate;
   late Set<int> _weekdays;
   late bool _isActive;
+  late bool _hasDoseTime;
+  late bool _startsTomorrowForEveryOtherDay;
+  bool _isLookingUpMedicine = false;
 
   @override
   void initState() {
@@ -628,18 +1220,25 @@ class _RoutineFormSheetState extends State<RoutineFormSheet> {
     _doseController = TextEditingController(
       text: _editableDoseValue(routine?.dose ?? ''),
     );
+    _boxQuantityController = TextEditingController(
+      text: _editableDoseValue(routine?.boxQuantity ?? ''),
+    );
     _noteController = TextEditingController(text: routine?.note ?? '');
     _routineType = routine?.routineType ?? RoutineType.daily;
     _time = routine?.time ?? const TimeOfDay(hour: 9, minute: 0);
-    _startDate = routine?.startDate ?? _dateOnly(DateTime.now());
     _weekdays = routine?.weekdays.toSet() ?? {DateTime.now().weekday};
     _isActive = routine?.isActive ?? true;
+    _hasDoseTime = routine?.time != null;
+    _startsTomorrowForEveryOtherDay =
+        routine?.routineType == RoutineType.everyOtherDay &&
+        _dateOnly(routine!.startDate).isAfter(_dateOnly(DateTime.now()));
   }
 
   @override
   void dispose() {
     _nameController.dispose();
     _doseController.dispose();
+    _boxQuantityController.dispose();
     _noteController.dispose();
     super.dispose();
   }
@@ -655,22 +1254,6 @@ class _RoutineFormSheetState extends State<RoutineFormSheet> {
     });
   }
 
-  Future<void> _pickStartDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _startDate,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2100),
-    );
-    if (picked == null) {
-      return;
-    }
-
-    setState(() {
-      _startDate = _dateOnly(picked);
-    });
-  }
-
   Future<void> _scanMedicineQr() async {
     final qrValue = await Navigator.of(context).push<String>(
       MaterialPageRoute(builder: (context) => const MedicineQrScannerPage()),
@@ -680,7 +1263,51 @@ class _RoutineFormSheetState extends State<RoutineFormSheet> {
     }
 
     setState(() {
-      _nameController.text = _extractMedicineNameFromQr(qrValue);
+      _isLookingUpMedicine = true;
+      if (_nameController.text.trim().startsWith('Barkod ')) {
+        _nameController.clear();
+      }
+    });
+
+    final lookupResult =
+        await widget.medicineLookupService.lookupFromScannedCode(qrValue);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _isLookingUpMedicine = false;
+      if (lookupResult.medicineName != null) {
+        _nameController.text = lookupResult.medicineName!;
+      }
+      if (lookupResult.boxQuantity != null) {
+        _boxQuantityController.text = lookupResult.boxQuantity!;
+      }
+    });
+
+    if (lookupResult.medicineName != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('İlaç adı barkoddan alındı.')),
+      );
+    } else if (lookupResult.message != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(lookupResult.message!)),
+      );
+    }
+  }
+
+  void _changeDoseBy(double step) {
+    final currentDose = _parseDose(_doseController.text) ?? 0;
+    final nextDose = currentDose + step;
+    if (nextDose < 0) {
+      return;
+    }
+
+    setState(() {
+      _doseController.text = _formatDose(nextDose);
+      _doseController.selection = TextSelection.collapsed(
+        offset: _doseController.text.length,
+      );
     });
   }
 
@@ -697,13 +1324,19 @@ class _RoutineFormSheetState extends State<RoutineFormSheet> {
     }
 
     final existingRoutine = widget.routine;
+    final effectiveStartDate = _routineType == RoutineType.everyOtherDay
+        ? _dateOnly(DateTime.now()).add(
+            Duration(days: _startsTomorrowForEveryOtherDay ? 1 : 0),
+          )
+        : existingRoutine?.startDate ?? _dateOnly(DateTime.now());
     final routine = MedicineRoutine(
       id: existingRoutine?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
       name: _nameController.text.trim(),
       dose: _formatDose(_parseDose(_doseController.text)!),
-      time: _time,
+      boxQuantity: _formatDose(_parseDose(_boxQuantityController.text)!),
+      time: _hasDoseTime ? _time : null,
       routineType: _routineType,
-      startDate: _startDate,
+      startDate: effectiveStartDate,
       weekdays: _weekdays,
       isActive: _isActive,
       note: _noteController.text.trim(),
@@ -735,9 +1368,15 @@ class _RoutineFormSheetState extends State<RoutineFormSheet> {
                   labelText: 'İlaç adı',
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
-                    onPressed: _scanMedicineQr,
-                    tooltip: 'QR oku',
-                    icon: const Icon(Icons.qr_code_scanner_outlined),
+                    onPressed: _isLookingUpMedicine ? null : _scanMedicineQr,
+                    tooltip: 'Kod oku',
+                    icon: _isLookingUpMedicine
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.qr_code_scanner_outlined),
                   ),
                 ),
                 validator: (value) {
@@ -749,49 +1388,69 @@ class _RoutineFormSheetState extends State<RoutineFormSheet> {
               ),
               const SizedBox(height: 12),
               TextFormField(
-                controller: _doseController,
+                controller: _boxQuantityController,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [
                   DecimalDoseInputFormatter(decimalRange: 2),
                 ],
                 decoration: const InputDecoration(
-                  labelText: 'Doz',
-                  hintText: 'Örn. 1.00',
+                  labelText: 'Kutuda kaç adet var',
+                  hintText: 'Örn. 30.00',
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
-                    return 'Doz gerekli';
+                    return 'Kutu adedi gerekli';
                   }
-                  if (_parseDose(value) == null) {
-                    return 'Doz sayı olmalı';
+                  final boxQuantity = _parseDose(value);
+                  if (boxQuantity == null || boxQuantity <= 0) {
+                    return 'Kutu adedi sıfırdan büyük olmalı';
                   }
                   return null;
                 },
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<RoutineType>(
-                value: _routineType,
-                decoration: const InputDecoration(
-                  labelText: 'Rutin',
-                  border: OutlineInputBorder(),
-                ),
-                items: RoutineType.values
-                    .map(
-                      (type) => DropdownMenuItem(
-                        value: type,
-                        child: Text(type.label),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 128,
+                    child: DoseStepperField(
+                      controller: _doseController,
+                      onIncrease: () => _changeDoseBy(1),
+                      onDecrease: () => _changeDoseBy(-1),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: DropdownButtonFormField<RoutineType>(
+                      value: _routineType,
+                      decoration: const InputDecoration(
+                        labelText: 'Rutin',
+                        border: OutlineInputBorder(),
                       ),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  if (value == null) {
-                    return;
-                  }
-                  setState(() {
-                    _routineType = value;
-                  });
-                },
+                      items: RoutineType.values
+                          .map(
+                            (type) => DropdownMenuItem(
+                              value: type,
+                              child: Text(type.label),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+                        setState(() {
+                          _routineType = value;
+                          if (value == RoutineType.everyOtherDay) {
+                            _startsTomorrowForEveryOtherDay = false;
+                          }
+                        });
+                      },
+                    ),
+                  ),
+                ],
               ),
               if (_routineType == RoutineType.weekly) ...[
                 const SizedBox(height: 12),
@@ -804,26 +1463,43 @@ class _RoutineFormSheetState extends State<RoutineFormSheet> {
                   },
                 ),
               ],
+              if (_routineType == RoutineType.everyOtherDay) ...[
+                const SizedBox(height: 4),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Yarın başlasın'),
+                  subtitle: const Text('Kapalıysa rutin bugünden başlar.'),
+                  value: _startsTomorrowForEveryOtherDay,
+                  onChanged: (value) {
+                    setState(() {
+                      _startsTomorrowForEveryOtherDay = value ?? false;
+                    });
+                  },
+                ),
+              ],
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _pickTime,
-                      icon: const Icon(Icons.schedule_outlined),
-                      label: Text(_formatTime(_time)),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _pickStartDate,
-                      icon: const Icon(Icons.calendar_today_outlined),
-                      label: Text(_formatDate(_startDate)),
-                    ),
-                  ),
-                ],
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('İlaç saati belirt'),
+                value: _hasDoseTime,
+                onChanged: (value) {
+                  setState(() {
+                    _hasDoseTime = value;
+                  });
+                },
               ),
+              if (_hasDoseTime)
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _pickTime,
+                        icon: const Icon(Icons.schedule_outlined),
+                        label: Text(_formatTime(_time)),
+                      ),
+                    ),
+                  ],
+                ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _noteController,
@@ -867,7 +1543,10 @@ class MedicineQrScannerPage extends StatefulWidget {
 
 class _MedicineQrScannerPageState extends State<MedicineQrScannerPage> {
   final MobileScannerController _scannerController = MobileScannerController(
-    formats: [BarcodeFormat.qrCode],
+    formats: [
+      BarcodeFormat.qrCode,
+      BarcodeFormat.dataMatrix,
+    ],
   );
   bool _hasResult = false;
 
@@ -903,7 +1582,7 @@ class _MedicineQrScannerPageState extends State<MedicineQrScannerPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('QR oku'),
+        title: const Text('Kod oku'),
         actions: [
           IconButton(
             onPressed: () => _scannerController.toggleTorch(),
@@ -922,6 +1601,101 @@ class _MedicineQrScannerPageState extends State<MedicineQrScannerPage> {
           const _QrScannerFrame(),
         ],
       ),
+    );
+  }
+}
+
+class DoseStepperField extends StatelessWidget {
+  const DoseStepperField({
+    super.key,
+    required this.controller,
+    required this.onIncrease,
+    required this.onDecrease,
+  });
+
+  final TextEditingController controller;
+  final VoidCallback onIncrease;
+  final VoidCallback onDecrease;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: TextFormField(
+              controller: controller,
+              textAlign: TextAlign.center,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [
+                DecimalDoseInputFormatter(decimalRange: 2),
+              ],
+              decoration: const InputDecoration(
+                labelText: 'Doz',
+                hintText: '1.00',
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Gerekli';
+                }
+                if (_parseDose(value) == null) {
+                  return 'Sayı';
+                }
+                return null;
+              },
+            ),
+          ),
+          const SizedBox(width: 4),
+          SizedBox(
+            width: 32,
+            child: Column(
+              children: [
+                Expanded(
+                  child: _DoseArrowButton(
+                    icon: Icons.keyboard_arrow_up,
+                    tooltip: 'Dozu artır',
+                    onPressed: onIncrease,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Expanded(
+                  child: _DoseArrowButton(
+                    icon: Icons.keyboard_arrow_down,
+                    tooltip: 'Dozu azalt',
+                    onPressed: onDecrease,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DoseArrowButton extends StatelessWidget {
+  const _DoseArrowButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton.outlined(
+      padding: EdgeInsets.zero,
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon, size: 20),
     );
   }
 }
@@ -951,7 +1725,7 @@ class _QrScannerFrame extends StatelessWidget {
               padding: const EdgeInsets.all(10),
               color: Colors.black.withValues(alpha: 0.62),
               child: const Text(
-                'İlaç kutusundaki QR kodu çerçeveye alın',
+                'İlaç kutusundaki QR veya DataMatrix kodunu çerçeveye alın',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white),
               ),
@@ -1107,6 +1881,21 @@ DateTime _dateOnly(DateTime date) {
   return DateTime(date.year, date.month, date.day);
 }
 
+DateTime _firstDayOfMonth(DateTime date) {
+  return DateTime(date.year, date.month);
+}
+
+DateTime _startOfWeek(DateTime date) {
+  final cleanDate = _dateOnly(date);
+  return cleanDate.subtract(Duration(days: cleanDate.weekday - 1));
+}
+
+bool _isSameDate(DateTime first, DateTime second) {
+  return first.year == second.year &&
+      first.month == second.month &&
+      first.day == second.day;
+}
+
 String _dateKey(DateTime date) {
   final cleanDate = _dateOnly(date);
   return '${cleanDate.year.toString().padLeft(4, '0')}-'
@@ -1114,24 +1903,37 @@ String _dateKey(DateTime date) {
       '${cleanDate.day.toString().padLeft(2, '0')}';
 }
 
-String _formatDate(DateTime date) {
-  return '${date.day.toString().padLeft(2, '0')}.'
-      '${date.month.toString().padLeft(2, '0')}.'
-      '${date.year}';
-}
-
 String _formatTime(TimeOfDay time) {
   return '${time.hour.toString().padLeft(2, '0')}:'
       '${time.minute.toString().padLeft(2, '0')}';
 }
 
-String _routineDescription(MedicineRoutine routine) {
-  final buffer = StringBuffer()
-    ..write(_formatTime(routine.time))
-    ..write(' - ')
+String _formatMonthYear(DateTime date) {
+  return '${_monthLabels[date.month - 1]} ${date.year}';
+}
+
+String _routineDescription(
+  MedicineRoutine routine, {
+  int takenCount = 0,
+}) {
+  final buffer = StringBuffer();
+  if (routine.time != null) {
+    buffer
+      ..write(_formatTime(routine.time!))
+      ..write(' - ');
+  }
+
+  buffer
     ..write(routine.dose)
     ..write(' - ')
     ..write(routine.routineType.label);
+
+  final boxSummary = _boxQuantitySummary(routine, takenCount: takenCount);
+  if (boxSummary != null) {
+    buffer
+      ..write(' - ')
+      ..write(boxSummary);
+  }
 
   if (routine.routineType == RoutineType.weekly) {
     final days = routine.weekdays.toList()..sort();
@@ -1147,10 +1949,52 @@ String _routineDescription(MedicineRoutine routine) {
   return buffer.toString();
 }
 
+String? _boxQuantitySummary(
+  MedicineRoutine routine, {
+  required int takenCount,
+}) {
+  final boxQuantity = _parseDose(routine.boxQuantity);
+  final dose = _parseDose(routine.dose);
+  if (boxQuantity == null || boxQuantity <= 0 || dose == null || dose <= 0) {
+    return null;
+  }
+
+  final usedQuantity = takenCount * dose;
+  final remainingQuantity =
+      (boxQuantity - usedQuantity).clamp(0, boxQuantity).toDouble();
+  final doseDays = remainingQuantity / dose;
+  final calendarDays = _estimateCalendarDays(routine, doseDays);
+  return 'Kalan ${_compactNumber(remainingQuantity)} adet, yaklaşık $calendarDays gün';
+}
+
+int _estimateCalendarDays(MedicineRoutine routine, double doseDays) {
+  switch (routine.routineType) {
+    case RoutineType.daily:
+      return doseDays.floor();
+    case RoutineType.everyOtherDay:
+      return (doseDays * 2).floor();
+    case RoutineType.weekly:
+      final weeklyDoseDays = routine.weekdays.isEmpty ? 1 : routine.weekdays.length;
+      return (doseDays / weeklyDoseDays * 7).floor();
+  }
+}
+
 int _sortByDoseTime(MedicineRoutine first, MedicineRoutine second) {
-  final firstMinutes = first.time.hour * 60 + first.time.minute;
-  final secondMinutes = second.time.hour * 60 + second.time.minute;
+  final firstMinutes = first.time == null
+      ? 24 * 60
+      : first.time!.hour * 60 + first.time!.minute;
+  final secondMinutes = second.time == null
+      ? 24 * 60
+      : second.time!.hour * 60 + second.time!.minute;
   return firstMinutes.compareTo(secondMinutes);
+}
+
+String _todayRoutineDescription(MedicineRoutine routine) {
+  if (routine.time == null) {
+    return routine.dose;
+  }
+
+  return '${_formatTime(routine.time!)} - ${routine.dose}';
 }
 
 String _extractMedicineNameFromQr(String qrValue) {
@@ -1233,6 +2077,79 @@ String? _extractMedicineNameFromLabelledText(String qrValue) {
   return null;
 }
 
+String? _extractGtinFromGs1(String qrValue) {
+  final printedGtinMatch = RegExp(r'\(01\)\s*(\d{14})').firstMatch(qrValue);
+  if (printedGtinMatch != null) {
+    return printedGtinMatch.group(1);
+  }
+
+  final compactGtinMatch = RegExp(r'01(\d{14})').firstMatch(qrValue);
+  return compactGtinMatch?.group(1);
+}
+
+String? _extractBarcodeFromScannedCode(String scannedCode) {
+  final gs1Gtin = _extractGtinFromGs1(scannedCode);
+  if (gs1Gtin != null) {
+    return _normalizeBarcode(gs1Gtin);
+  }
+
+  final digits = scannedCode.replaceAll(RegExp(r'\D'), '');
+  if (digits.length == 13 || digits.length == 14) {
+    return _normalizeBarcode(digits);
+  }
+
+  return null;
+}
+
+String _normalizeBarcode(String? value) {
+  final digits = (value ?? '').replaceAll(RegExp(r'\D'), '');
+  if (digits.length == 14 && digits.startsWith('0')) {
+    return digits.substring(1);
+  }
+
+  return digits;
+}
+
+String? _readMedicineName(Map<String, dynamic> medicine) {
+  for (final key in _apiMedicineNameKeys) {
+    final value = medicine[key];
+    if (value is String && value.trim().isNotEmpty) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+String? _readBoxQuantity(Map<String, dynamic> medicine) {
+  for (final key in _boxQuantityKeys) {
+    final value = medicine[key];
+    final quantity = _parseDose(value?.toString() ?? '');
+    if (quantity != null && quantity > 0) {
+      return _formatDose(quantity);
+    }
+  }
+
+  return null;
+}
+
+String? _extractBoxQuantityFromText(String value) {
+  final match = RegExp(
+    r'(\d+(?:[,.]\d+)?)\s*(?:adet|tablet|tbl|kaps[üu]l|kap|ampul|flakon|saşe|sase|supp|draje|pastil)',
+    caseSensitive: false,
+  ).firstMatch(value);
+  if (match == null) {
+    return null;
+  }
+
+  final quantity = _parseDose(match.group(1) ?? '');
+  if (quantity == null || quantity <= 0) {
+    return null;
+  }
+
+  return _formatDose(quantity);
+}
+
 double? _parseDose(String value) {
   final normalizedValue = value.trim().replaceAll(',', '.');
   if (normalizedValue.isEmpty || normalizedValue == '.') {
@@ -1243,6 +2160,14 @@ double? _parseDose(String value) {
 }
 
 String _formatDose(double value) {
+  return value.toStringAsFixed(2);
+}
+
+String _compactNumber(double value) {
+  if (value == value.roundToDouble()) {
+    return value.toStringAsFixed(0);
+  }
+
   return value.toStringAsFixed(2);
 }
 
@@ -1269,6 +2194,21 @@ const _weekdayLabels = [
   'Paz',
 ];
 
+const _monthLabels = [
+  'Ocak',
+  'Şubat',
+  'Mart',
+  'Nisan',
+  'Mayıs',
+  'Haziran',
+  'Temmuz',
+  'Ağustos',
+  'Eylül',
+  'Ekim',
+  'Kasım',
+  'Aralık',
+];
+
 const _medicineNameKeys = [
   'name',
   'medicine',
@@ -1287,4 +2227,24 @@ const _medicineNameKeys = [
   'ilaç adı',
   'ilaç_adı',
   'ilaçadı',
+];
+
+const _apiMedicineNameKeys = [
+  'İlaç Adı',
+  'ilaç adı',
+  'Ilac Adi',
+  'ilac_adi',
+  'la_ad',
+  'name',
+];
+
+const _boxQuantityKeys = [
+  'boxQuantity',
+  'box_quantity',
+  'Kutu Adedi',
+  'Kutu Miktarı',
+  'Ambalaj Miktarı',
+  'Ambalaj Miktari',
+  'Ambalaj Adedi',
+  'Adet',
 ];
