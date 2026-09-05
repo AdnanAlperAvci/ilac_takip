@@ -67,6 +67,14 @@ flutter run
 
 Debug sürümü gerçek uygulamanın üzerine yazmaması için ayrı paket ekiyle kurulur.
 
+Release App Bundle üretmeden önce `android/key.properties.example` dosyasını `android/key.properties` olarak kopyalayıp gerçek keystore şifreleriyle doldurun. `android/key.properties` ve keystore dosyaları Git'e eklenmez.
+
+Play Store'a yüklenecek dosyayı üretmek için:
+
+```bash
+flutter build appbundle --release
+```
+
 ## İzinler
 
 - Kamera izni: QR veya DataMatrix kodunu okumak için kullanılır.

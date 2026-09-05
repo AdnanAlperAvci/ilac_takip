@@ -1,0 +1,4 @@
+storePassword=BURAYA_KEYSTORE_SIFRESI
+keyPassword=BURAYA_KEY_SIFRESI
+keyAlias=upload
+storeFile=app/upload-keystore.jks
